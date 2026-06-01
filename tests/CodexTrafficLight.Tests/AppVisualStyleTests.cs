@@ -82,6 +82,7 @@ public sealed class AppVisualStyleTests
         var code = File.ReadAllText(Path.Combine(root, "src", "CodexTrafficLight.App", "MainWindow.xaml.cs"));
 
         Assert.Contains("<Version>1.0.0</Version>", project);
+        Assert.Contains("<IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>", project);
         Assert.Contains("UpdateManifestUrl", code);
         Assert.Contains("CheckForUpdatesAsync", code);
         Assert.Contains("UpdateChecker", code);
