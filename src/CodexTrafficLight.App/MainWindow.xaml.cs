@@ -1,0 +1,1008 @@
+using System.IO;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Effects;
+using System.Windows.Shapes;
+using System.Windows.Threading;
+using System.Diagnostics;
+using System.Reflection;
+using System.Net.Http;
+using CodexTrafficLight.Core.Models;
+using CodexTrafficLight.Core.Services;
+using Forms = System.Windows.Forms;
+using DrawingIcon = System.Drawing.Icon;
+using DrawingSystemIcons = System.Drawing.SystemIcons;
+using MediaColor = System.Windows.Media.Color;
+using WpfPoint = System.Windows.Point;
+using WpfMessageBox = System.Windows.MessageBox;
+
+namespace CodexTrafficLight.App;
+
+public partial class MainWindow : Window
+{
+    private readonly CodexPaths _paths = new();
+    private readonly StatusFileStore _statusStore;
+    private readonly StatusFileWatcher _watcher;
+    private readonly StatsStore _statsStore;
+    private readonly SessionStatusStore _sessionStatusStore;
+    private readonly SessionStatusDirectoryWatcher _sessionWatcher;
+    private readonly Dictionary<CodexLightState, Ellipse> _lamps;
+    private readonly Dictionary<CodexLightState, Ellipse> _wells;
+    private readonly Dictionary<CodexLightState, Ellipse> _rings;
+    private readonly Dictionary<CodexLightState, FrameworkElement> _lampHosts;
+    private static readonly Duration LampTransitionDuration = new(TimeSpan.FromMilliseconds(200));
+    private const string UpdateManifestUrl = "https://raw.githubusercontent.com/Novsco12Gao/codex-traffic-light/main/version.json";
+
+    private AppSettingsStore? _settingsStore;
+    private AppSettings _settings = new();
+    private Forms.NotifyIcon? _notifyIcon;
+    private CodexLightState _currentState = CodexLightState.Unknown;
+    private CodexLightState _lastStatsState = CodexLightState.Unknown;
+    private DateTimeOffset? _redStartedAt;
+    private readonly bool _shouldShowTrustReminder;
+    private IReadOnlyList<CodexSessionStatus> _visibleSessions = Array.Empty<CodexSessionStatus>();
+    private CodexLightState _lastAggregateState = CodexLightState.Unknown;
+    private DateTimeOffset _drawerSuppressedUntil = DateTimeOffset.MinValue;
+    private readonly DispatcherTimer _drawerAutoCloseTimer;
+    private static string AboutText => $"""
+Codex 红绿灯
+
+状态说明：
+红灯：Codex 正在处理当前请求。
+黄灯：等待权限确认，需要你操作。
+绿灯：当前轮次已结束或空闲。
+灰灯：暂无可用状态。
+
+多任务时：
+主灯按 黄 > 红 > 绿 的优先级显示；
+右侧任务面板显示每个 Codex 会话的状态。
+
+技术栈：
+.NET 8 + WPF
+Windows Forms 托盘菜单
+Codex Hooks + PowerShell
+本地 JSON 状态文件
+FileSystemWatcher 实时监听
+xUnit 自动化测试
+
+纯本地运行，不上传数据。
+
+版本：{GetCurrentVersion()}
+
+愿每一次红灯，都是通往绿灯的一步。
+
+作者：Gyk
+""";
+
+    public MainWindow()
+    {
+        InitializeComponent();
+
+        _statusStore = new StatusFileStore(_paths);
+        _watcher = new StatusFileWatcher(_paths, _statusStore);
+        _statsStore = new StatsStore(_paths);
+        _sessionStatusStore = new SessionStatusStore(_paths);
+        _sessionWatcher = new SessionStatusDirectoryWatcher(_paths, _sessionStatusStore, () => _settings.ShowEndedSessions);
+        _settingsStore = new AppSettingsStore(_paths);
+        _shouldShowTrustReminder = !File.Exists(_paths.SettingsPath);
+        _settings = _settingsStore.Load();
+        _drawerAutoCloseTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+        _drawerAutoCloseTimer.Tick += (_, _) =>
+        {
+            _drawerAutoCloseTimer.Stop();
+            SetDrawerOpen(false, suppressAutoOpen: false);
+        };
+
+        _lamps = new Dictionary<CodexLightState, Ellipse>
+        {
+            [CodexLightState.Red] = RedLamp,
+            [CodexLightState.Yellow] = YellowLamp,
+            [CodexLightState.Green] = GreenLamp
+        };
+        _wells = new Dictionary<CodexLightState, Ellipse>
+        {
+            [CodexLightState.Red] = RedWell,
+            [CodexLightState.Yellow] = YellowWell,
+            [CodexLightState.Green] = GreenWell
+        };
+        _rings = new Dictionary<CodexLightState, Ellipse>
+        {
+            [CodexLightState.Red] = RedRing,
+            [CodexLightState.Yellow] = YellowRing,
+            [CodexLightState.Green] = GreenRing
+        };
+        _lampHosts = new Dictionary<CodexLightState, FrameworkElement>
+        {
+            [CodexLightState.Red] = RedLampHost,
+            [CodexLightState.Yellow] = YellowLampHost,
+            [CodexLightState.Green] = GreenLampHost
+        };
+
+        ApplySavedWindowPosition();
+        MuteCheckBox.IsChecked = _settings.Muted;
+        ThemeCheckBox.IsChecked = _settings.Theme == "dark";
+        ApplyTheme(_settings.Theme);
+        ApplyStatus(_statusStore.Read());
+
+        _watcher.StatusChanged += status =>
+        {
+            Dispatcher.Invoke(() => ApplyStatus(status));
+        };
+        _sessionWatcher.SessionsChanged += sessions =>
+        {
+            Dispatcher.Invoke(() => ApplySessions(sessions));
+        };
+
+        CreateTrayMenu();
+        InstallHooksAtStartup();
+        ApplySessions(LoadCurrentSessions());
+    }
+
+    public void ApplyStatus(CodexStatus status)
+    {
+        if (_visibleSessions.Count > 0)
+        {
+            return;
+        }
+
+        ApplyState(status.State);
+
+        if (status.Event is "manual" or "app-start")
+        {
+            return;
+        }
+
+        if (status.State != _lastStatsState)
+        {
+            _statsStore.RecordStateChange(status.State, _lastStatsState, _redStartedAt);
+            _redStartedAt = status.State == CodexLightState.Red ? DateTimeOffset.Now : null;
+            _lastStatsState = status.State;
+        }
+    }
+
+    public void ApplySessions(IReadOnlyList<CodexSessionStatus> sessions)
+    {
+        _visibleSessions = sessions;
+        var aggregateState = SessionStatusStore.GetAggregateState(sessions);
+        var hasMultipleSessions = sessions.Count > 1;
+
+        SessionCountBadge.Visibility = hasMultipleSessions ? Visibility.Visible : Visibility.Collapsed;
+        SessionCountText.Text = sessions.Count.ToString();
+        RenderSessionRows(sessions);
+
+        if (sessions.Count > 0)
+        {
+            ApplyState(aggregateState);
+        }
+
+        if (!hasMultipleSessions)
+        {
+            SetDrawerOpen(false, suppressAutoOpen: false);
+        }
+        else if (_settings.AutoOpenDrawerOnYellow &&
+                 aggregateState == CodexLightState.Yellow &&
+                 _lastAggregateState != CodexLightState.Yellow &&
+                 DateTimeOffset.Now >= _drawerSuppressedUntil)
+        {
+            SetDrawerOpen(true, suppressAutoOpen: false);
+            _drawerAutoCloseTimer.Stop();
+            _drawerAutoCloseTimer.Start();
+        }
+
+        _lastAggregateState = aggregateState;
+    }
+
+    public void ApplyState(CodexLightState state)
+    {
+        _currentState = state;
+        StopAnimations();
+
+        foreach (var (lampState, lamp) in _lamps)
+        {
+            ApplyLampVisual(lampState, lamp, _wells[lampState], _rings[lampState], lampState == state);
+        }
+
+        ApplyStyle(_settings.Style);
+    }
+
+    private static void ApplyLampVisual(CodexLightState state, Ellipse lamp, Ellipse well, Ellipse ring, bool active)
+    {
+        var config = GetLampConfig(state);
+        var lampBrush = CreateLampBrush(config, active);
+        lamp.Fill = lampBrush;
+        lamp.BeginAnimation(OpacityProperty, CreateDoubleAnimation(1));
+
+        var wellBrush = CreateWellBrush(config, active);
+        well.Fill = wellBrush;
+        well.BeginAnimation(OpacityProperty, CreateDoubleAnimation(1));
+
+        var lampGlow = CreateLampGlow(config.GlowColor, active ? 12 : 0, active ? 0.9 : 0);
+        lamp.Effect = lampGlow;
+
+        var wellGlow = CreateLampGlow(config.GlowColor, active ? 40 : 0, active ? 0.82 : 0);
+        well.Effect = wellGlow;
+
+        ring.Fill = new SolidColorBrush(config.ActiveColor);
+        ring.Effect = CreateLampGlow(config.GlowColor, 28, 0.7);
+        ring.Opacity = 0;
+        ResetRingScale(ring);
+
+        if (!active)
+        {
+            return;
+        }
+
+        if (state == CodexLightState.Red)
+        {
+            StartBreath(lamp, lampGlow, wellGlow);
+            return;
+        }
+
+        StartReferencePulse(lamp, ring);
+    }
+
+    private static LampVisualConfig GetLampConfig(CodexLightState state)
+    {
+        return state switch
+        {
+            CodexLightState.Red => new LampVisualConfig(
+                MediaColor.FromRgb(255, 59, 48),
+                MediaColor.FromRgb(75, 20, 20),
+                MediaColor.FromArgb(140, 255, 59, 48),
+                MediaColor.FromArgb(76, 255, 59, 48)),
+            CodexLightState.Yellow => new LampVisualConfig(
+                MediaColor.FromRgb(255, 159, 10),
+                MediaColor.FromRgb(75, 55, 15),
+                MediaColor.FromArgb(140, 255, 159, 10),
+                MediaColor.FromArgb(76, 255, 159, 10)),
+            CodexLightState.Green => new LampVisualConfig(
+                MediaColor.FromRgb(48, 209, 88),
+                MediaColor.FromRgb(20, 75, 35),
+                MediaColor.FromArgb(140, 48, 209, 88),
+                MediaColor.FromArgb(76, 48, 209, 88)),
+            _ => new LampVisualConfig(
+                MediaColor.FromRgb(96, 96, 96),
+                MediaColor.FromRgb(36, 36, 36),
+                MediaColor.FromArgb(0, 96, 96, 96),
+                MediaColor.FromArgb(0, 96, 96, 96))
+        };
+    }
+
+    private static RadialGradientBrush CreateLampBrush(LampVisualConfig config, bool active)
+    {
+        var baseColor = active ? config.ActiveColor : config.DimColor;
+        return new RadialGradientBrush
+        {
+            Center = new WpfPoint(0.42, 0.32),
+            GradientOrigin = new WpfPoint(0.34, 0.24),
+            RadiusX = 0.74,
+            RadiusY = 0.74,
+            GradientStops =
+            {
+                new GradientStop(WithAlpha(baseColor, active ? (byte)255 : (byte)204), 0.0),
+                new GradientStop(WithAlpha(baseColor, active ? (byte)221 : (byte)160), 0.42),
+                new GradientStop(WithAlpha(baseColor, active ? (byte)136 : (byte)105), 1.0)
+            }
+        };
+    }
+
+    private static RadialGradientBrush CreateWellBrush(LampVisualConfig config, bool active)
+    {
+        return new RadialGradientBrush
+        {
+            Center = new WpfPoint(0.5, 0.45),
+            GradientOrigin = new WpfPoint(0.45, 0.32),
+            RadiusX = 0.72,
+            RadiusY = 0.72,
+            GradientStops =
+            {
+                new GradientStop(active ? WithAlpha(config.DimColor, 210) : MediaColor.FromRgb(27, 27, 28), 0.0),
+                new GradientStop(MediaColor.FromRgb(23, 23, 24), 0.58),
+                new GradientStop(MediaColor.FromRgb(7, 7, 8), 1.0)
+            }
+        };
+    }
+
+    private static MediaColor WithAlpha(MediaColor color, byte alpha)
+    {
+        return MediaColor.FromArgb(alpha, color.R, color.G, color.B);
+    }
+
+    private static DropShadowEffect CreateLampGlow(MediaColor color, double blurRadius, double opacity)
+    {
+        return new DropShadowEffect
+        {
+            Color = color,
+            BlurRadius = blurRadius,
+            ShadowDepth = 0,
+            Opacity = opacity
+        };
+    }
+
+    private static DoubleAnimation CreateDoubleAnimation(double targetValue)
+    {
+        return new DoubleAnimation
+        {
+            To = targetValue,
+            Duration = LampTransitionDuration,
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+    }
+
+    private static void StartBreath(Ellipse lamp, DropShadowEffect lampGlow, DropShadowEffect wellGlow)
+    {
+        var opacityAnimation = new DoubleAnimation
+        {
+            From = 1,
+            To = 0.35,
+            Duration = TimeSpan.FromSeconds(1),
+            AutoReverse = true,
+            RepeatBehavior = RepeatBehavior.Forever,
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut }
+        };
+        var glowAnimation = new DoubleAnimation
+        {
+            From = 0.9,
+            To = 0.38,
+            Duration = TimeSpan.FromSeconds(1),
+            AutoReverse = true,
+            RepeatBehavior = RepeatBehavior.Forever,
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut }
+        };
+
+        lamp.BeginAnimation(OpacityProperty, opacityAnimation);
+        lampGlow.BeginAnimation(DropShadowEffect.OpacityProperty, glowAnimation);
+        wellGlow.BeginAnimation(DropShadowEffect.OpacityProperty, glowAnimation.Clone());
+    }
+
+    private static void StartReferencePulse(Ellipse lamp, Ellipse ring)
+    {
+        var lampAnimation = new DoubleAnimation
+        {
+            From = 1,
+            To = 0.2,
+            Duration = TimeSpan.FromMilliseconds(275),
+            AutoReverse = true,
+            RepeatBehavior = RepeatBehavior.Forever,
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut }
+        };
+        var ringOpacityAnimation = new DoubleAnimation
+        {
+            From = 0.42,
+            To = 0,
+            Duration = TimeSpan.FromMilliseconds(275),
+            RepeatBehavior = RepeatBehavior.Forever,
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        var ringScaleAnimation = new DoubleAnimation
+        {
+            From = 1,
+            To = 1.72,
+            Duration = TimeSpan.FromMilliseconds(275),
+            RepeatBehavior = RepeatBehavior.Forever,
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+
+        lamp.BeginAnimation(OpacityProperty, lampAnimation);
+        ring.BeginAnimation(OpacityProperty, ringOpacityAnimation);
+        if (ring.RenderTransform is ScaleTransform scale)
+        {
+            scale.BeginAnimation(ScaleTransform.ScaleXProperty, ringScaleAnimation);
+            scale.BeginAnimation(ScaleTransform.ScaleYProperty, ringScaleAnimation.Clone());
+        }
+    }
+
+    private static void ResetRingScale(Ellipse ring)
+    {
+        if (ring.RenderTransform is not ScaleTransform scale)
+        {
+            return;
+        }
+
+        scale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+        scale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+        scale.ScaleX = 1;
+        scale.ScaleY = 1;
+    }
+
+    private void StopAnimations()
+    {
+        foreach (var lamp in _lamps.Values)
+        {
+            lamp.BeginAnimation(OpacityProperty, null);
+            lamp.Opacity = 1;
+
+            if (lamp.Fill is SolidColorBrush brush)
+            {
+                brush.BeginAnimation(SolidColorBrush.ColorProperty, null);
+            }
+
+            if (lamp.Effect is DropShadowEffect glow)
+            {
+                glow.BeginAnimation(DropShadowEffect.OpacityProperty, null);
+                glow.BeginAnimation(DropShadowEffect.BlurRadiusProperty, null);
+            }
+        }
+
+        foreach (var well in _wells.Values)
+        {
+            if (well.Effect is DropShadowEffect glow)
+            {
+                glow.BeginAnimation(DropShadowEffect.OpacityProperty, null);
+                glow.BeginAnimation(DropShadowEffect.BlurRadiusProperty, null);
+            }
+        }
+
+        foreach (var ring in _rings.Values)
+        {
+            ring.BeginAnimation(OpacityProperty, null);
+            ring.Opacity = 0;
+            ResetRingScale(ring);
+        }
+    }
+
+    private void RenderSessionRows(IReadOnlyList<CodexSessionStatus> sessions)
+    {
+        SessionListPanel.Children.Clear();
+        foreach (var session in sessions)
+        {
+            SessionListPanel.Children.Add(CreateSessionRow(session));
+        }
+    }
+
+    private UIElement CreateSessionRow(CodexSessionStatus session)
+    {
+        var row = new Grid
+        {
+            Margin = new Thickness(4, 8, 0, 0),
+            Opacity = session.State == CodexLightState.Green ? (_settings.Theme == "dark" ? 0.52 : 0.78) : 1
+        };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(14) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var dot = new Ellipse
+        {
+            Width = 9,
+            Height = 9,
+            Fill = new SolidColorBrush(GetLampConfig(session.State).ActiveColor),
+            Effect = CreateLampGlow(GetLampConfig(session.State).GlowColor, 10, 0.75),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        Grid.SetColumn(dot, 0);
+        row.Children.Add(dot);
+
+        var textPanel = new StackPanel();
+        var name = new TextBlock
+        {
+            Text = GetSessionDisplayName(session),
+            Foreground = GetPrimaryTextBrush(),
+            FontWeight = FontWeights.Bold,
+            FontSize = 12,
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+        var meta = new TextBlock
+        {
+            Text = $"{GetPathTail(session.WorkingDirectory)} · {FormatAge(session.UpdatedAt)}",
+            Foreground = GetSecondaryTextBrush(),
+            FontSize = 10,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Margin = new Thickness(0, 3, 0, 0)
+        };
+        textPanel.Children.Add(name);
+        textPanel.Children.Add(meta);
+        Grid.SetColumn(textPanel, 1);
+        row.Children.Add(textPanel);
+
+        var label = new Border
+        {
+            CornerRadius = new CornerRadius(9),
+            Background = new SolidColorBrush(GetStateBadgeBackground(session.State)),
+            Padding = new Thickness(6, 3, 6, 3),
+            Child = new TextBlock
+            {
+                Text = GetStateText(session.State),
+                Foreground = new SolidColorBrush(GetStateBadgeForeground(session.State)),
+                FontSize = 10
+            }
+        };
+        Grid.SetColumn(label, 2);
+        row.Children.Add(label);
+
+        return row;
+    }
+
+    private void SetDrawerOpen(bool open, bool suppressAutoOpen)
+    {
+        SessionDrawer.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+        if (!open && suppressAutoOpen)
+        {
+            _drawerSuppressedUntil = DateTimeOffset.Now.AddSeconds(10);
+            _drawerAutoCloseTimer.Stop();
+        }
+
+        UpdateWindowHeight();
+    }
+
+    private static string GetSessionDisplayName(CodexSessionStatus session)
+    {
+        if (!string.IsNullOrWhiteSpace(session.DisplayName))
+        {
+            return session.DisplayName;
+        }
+
+        return string.IsNullOrWhiteSpace(session.WorkingDirectory)
+            ? "Codex"
+            : System.IO.Path.GetFileName(session.WorkingDirectory.TrimEnd(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar));
+    }
+
+    private static string GetPathTail(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return "-";
+        }
+
+        var parent = System.IO.Path.GetFileName(System.IO.Path.GetDirectoryName(path));
+        var leaf = System.IO.Path.GetFileName(path.TrimEnd(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar));
+        return string.IsNullOrWhiteSpace(parent) ? leaf : $@"{parent}\{leaf}";
+    }
+
+    private static string FormatAge(DateTimeOffset updatedAt)
+    {
+        var age = DateTimeOffset.Now - updatedAt;
+        if (age.TotalSeconds < 60)
+        {
+            return $"{Math.Max(0, (int)age.TotalSeconds)}s";
+        }
+
+        if (age.TotalMinutes < 60)
+        {
+            return $"{(int)age.TotalMinutes}m";
+        }
+
+        return $"{(int)age.TotalHours}h";
+    }
+
+    private static string GetStateText(CodexLightState state)
+    {
+        return state switch
+        {
+            CodexLightState.Yellow => "等权限",
+            CodexLightState.Red => "处理中",
+            CodexLightState.Green => "完成",
+            _ => "未知"
+        };
+    }
+
+    private MediaColor GetStateBadgeBackground(CodexLightState state)
+    {
+        if (_settings.Theme != "dark")
+        {
+            return state switch
+            {
+                CodexLightState.Yellow => MediaColor.FromArgb(46, 255, 159, 10),
+                CodexLightState.Red => MediaColor.FromArgb(42, 255, 59, 48),
+                CodexLightState.Green => MediaColor.FromArgb(46, 48, 209, 88),
+                _ => MediaColor.FromRgb(235, 236, 240)
+            };
+        }
+
+        return state switch
+        {
+            CodexLightState.Yellow => MediaColor.FromArgb(38, 255, 159, 10),
+            CodexLightState.Red => MediaColor.FromArgb(36, 255, 59, 48),
+            CodexLightState.Green => MediaColor.FromArgb(34, 48, 209, 88),
+            _ => MediaColor.FromRgb(43, 44, 49)
+        };
+    }
+
+    private MediaColor GetStateBadgeForeground(CodexLightState state)
+    {
+        if (_settings.Theme != "dark")
+        {
+            return state switch
+            {
+                CodexLightState.Yellow => MediaColor.FromRgb(126, 78, 0),
+                CodexLightState.Red => MediaColor.FromRgb(138, 37, 32),
+                CodexLightState.Green => MediaColor.FromRgb(21, 105, 48),
+                _ => MediaColor.FromRgb(65, 68, 76)
+            };
+        }
+
+        return state switch
+        {
+            CodexLightState.Yellow => MediaColor.FromRgb(255, 211, 144),
+            CodexLightState.Red => MediaColor.FromRgb(255, 177, 173),
+            CodexLightState.Green => MediaColor.FromRgb(156, 243, 182),
+            _ => MediaColor.FromRgb(216, 216, 220)
+        };
+    }
+
+    private void CreateTrayMenu()
+    {
+        _notifyIcon = new Forms.NotifyIcon
+        {
+            Text = "Codex 红绿灯",
+            Visible = true,
+            Icon = LoadApplicationIcon(),
+            ContextMenuStrip = new Forms.ContextMenuStrip()
+        };
+
+        RebuildTrayMenu();
+    }
+
+    private void RebuildTrayMenu()
+    {
+        if (_notifyIcon?.ContextMenuStrip is null)
+        {
+            return;
+        }
+
+        var menu = _notifyIcon.ContextMenuStrip;
+        menu.Items.Clear();
+        menu.Items.Add("显示/隐藏红绿灯", null, (_, _) => ToggleWindowVisibility());
+        menu.Items.Add(new Forms.ToolStripSeparator());
+        menu.Items.Add("切换到红灯", null, (_, _) => SetManualState(CodexLightState.Red, "manual"));
+        menu.Items.Add("切换到黄灯", null, (_, _) => SetManualState(CodexLightState.Yellow, "manual"));
+        menu.Items.Add("切换到绿灯", null, (_, _) => SetManualState(CodexLightState.Green, "manual"));
+        menu.Items.Add(new Forms.ToolStripSeparator());
+        menu.Items.Add(_settings.Style == "triple" ? "切换到单灯样式" : "切换到三灯样式", null, (_, _) => ToggleStyle());
+        menu.Items.Add(new Forms.ToolStripSeparator());
+        menu.Items.Add("查看配置路径", null, (_, _) => WpfMessageBox.Show(_paths.HooksPath, "Codex hooks 配置路径"));
+        menu.Items.Add("重新写入配置", null, (_, _) => RewriteHooks(showReminder: true));
+        menu.Items.Add(new Forms.ToolStripSeparator());
+        menu.Items.Add(_settings.Theme == "dark" ? "切换浅色模式" : "切换深色模式", null, (_, _) => ToggleTheme());
+        menu.Items.Add(_settings.AutoOpenDrawerOnYellow ? "关闭黄灯自动展开" : "开启黄灯自动展开", null, (_, _) => ToggleAutoOpenDrawerOnYellow());
+        menu.Items.Add(_settings.ShowEndedSessions ? "隐藏已结束会话" : "显示已结束会话", null, (_, _) => ToggleShowEndedSessions());
+        menu.Items.Add("清理已完成会话", null, (_, _) => ClearEndedSessions());
+        menu.Items.Add("本周周报", null, (_, _) => ShowWeeklyReport());
+        menu.Items.Add("检查更新", null, async (_, _) => await CheckForUpdatesAsync());
+        menu.Items.Add("关于我", null, (_, _) => WpfMessageBox.Show(AboutText, "关于"));
+        menu.Items.Add(new Forms.ToolStripSeparator());
+        menu.Items.Add("退出", null, (_, _) => System.Windows.Application.Current.Shutdown());
+    }
+
+    private void ToggleWindowVisibility()
+    {
+        if (IsVisible)
+        {
+            Hide();
+        }
+        else
+        {
+            Show();
+            Activate();
+        }
+    }
+
+    private void SetManualState(CodexLightState state, string eventName)
+    {
+        var status = new CodexStatus(state, eventName, DateTimeOffset.Now);
+        _statusStore.Write(status);
+        ApplyStatus(status);
+    }
+
+    private void RewriteHooks(bool showReminder)
+    {
+        var path = new CodexHookInstaller(_paths).InstallOrUpdate();
+        if (showReminder)
+        {
+            ShowHookTrustReminder(path);
+        }
+    }
+
+    private void InstallHooksAtStartup()
+    {
+        var hooksPath = new CodexHookInstaller(_paths).InstallOrUpdate();
+        if (!File.Exists(_paths.StatusPath))
+        {
+            _statusStore.Write(CodexLightState.Green, "app-start");
+            ApplyState(CodexLightState.Green);
+        }
+
+        if (_shouldShowTrustReminder)
+        {
+            ShowHookTrustReminder(hooksPath);
+        }
+    }
+
+    private static void ShowHookTrustReminder(string hooksPath)
+    {
+        WpfMessageBox.Show(
+            $"Codex hooks 已写入：{hooksPath}\n\n请在 Codex 中运行 /hooks，并信任 Codex 红绿灯 hooks。未信任前，Codex 会跳过这些 hook。",
+            "Codex 红绿灯");
+    }
+
+    private void ToggleStyle()
+    {
+        var next = _settings.Style == "triple" ? "single" : "triple";
+        SaveSettings(_settings with { Style = next });
+        ApplyStyle(next);
+        RebuildTrayMenu();
+    }
+
+    private void ApplyStyle(string style)
+    {
+        if (style == "single")
+        {
+            Body.Height = 92;
+            SetHostVisibility(CodexLightState.Red, _currentState == CodexLightState.Red);
+            SetHostVisibility(CodexLightState.Yellow, _currentState is CodexLightState.Yellow or CodexLightState.Unknown);
+            SetHostVisibility(CodexLightState.Green, _currentState == CodexLightState.Green);
+            UpdateWindowHeight();
+            return;
+        }
+
+        Body.Height = 200;
+        SetHostVisibility(CodexLightState.Red, true);
+        SetHostVisibility(CodexLightState.Yellow, true);
+        SetHostVisibility(CodexLightState.Green, true);
+        UpdateWindowHeight();
+    }
+
+    private void SetHostVisibility(CodexLightState state, bool visible)
+    {
+        _lampHosts[state].Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void ToggleTheme()
+    {
+        var next = _settings.Theme == "dark" ? "light" : "dark";
+        SaveSettings(_settings with { Theme = next });
+        ApplyTheme(next);
+        RebuildTrayMenu();
+    }
+
+    private void ToggleAutoOpenDrawerOnYellow()
+    {
+        SaveSettings(_settings with { AutoOpenDrawerOnYellow = !_settings.AutoOpenDrawerOnYellow });
+        RebuildTrayMenu();
+    }
+
+    private void ToggleShowEndedSessions()
+    {
+        SaveSettings(_settings with { ShowEndedSessions = !_settings.ShowEndedSessions });
+        RebuildTrayMenu();
+        ApplySessions(LoadCurrentSessions());
+    }
+
+    private void ClearEndedSessions()
+    {
+        _sessionStatusStore.ClearEndedSessions();
+        ApplySessions(LoadCurrentSessions());
+    }
+
+    private IReadOnlyList<CodexSessionStatus> LoadCurrentSessions()
+    {
+        return _sessionStatusStore.LoadSessions(_settings.ShowEndedSessions);
+    }
+
+    private void ApplyTheme(string theme)
+    {
+        Body.Background = theme == "dark"
+            ? new SolidColorBrush(MediaColor.FromRgb(43, 43, 43))
+            : new SolidColorBrush(MediaColor.FromRgb(230, 230, 230));
+        SettingsPanel.Background = theme == "dark"
+            ? new SolidColorBrush(MediaColor.FromRgb(42, 42, 42))
+            : new SolidColorBrush(MediaColor.FromRgb(238, 238, 238));
+        SessionDrawer.Background = GetDrawerBackgroundBrush();
+        SessionDrawerTitle.Foreground = GetPrimaryTextBrush();
+        SessionDrawerSortLabel.Foreground = GetSecondaryTextBrush();
+        SessionDrawerDivider.Background = theme == "dark"
+            ? new SolidColorBrush(MediaColor.FromArgb(34, 255, 255, 255))
+            : new SolidColorBrush(MediaColor.FromArgb(38, 24, 27, 31));
+        SessionDrawerAccent.Background = new SolidColorBrush(MediaColor.FromRgb(255, 159, 10));
+        MuteCheckBox.Foreground = GetSettingsTextBrush();
+        ThemeCheckBox.Foreground = GetSettingsTextBrush();
+        RenderSessionRows(_visibleSessions);
+    }
+
+    private SolidColorBrush GetDrawerBackgroundBrush()
+    {
+        return _settings.Theme == "dark"
+            ? new SolidColorBrush(MediaColor.FromArgb(247, 32, 33, 36))
+            : new SolidColorBrush(MediaColor.FromArgb(246, 246, 247, 250));
+    }
+
+    private SolidColorBrush GetPrimaryTextBrush()
+    {
+        return _settings.Theme == "dark"
+            ? new SolidColorBrush(MediaColor.FromRgb(246, 246, 248))
+            : new SolidColorBrush(MediaColor.FromRgb(31, 34, 40));
+    }
+
+    private SolidColorBrush GetSecondaryTextBrush()
+    {
+        return _settings.Theme == "dark"
+            ? new SolidColorBrush(MediaColor.FromRgb(168, 168, 176))
+            : new SolidColorBrush(MediaColor.FromRgb(98, 104, 116));
+    }
+
+    private SolidColorBrush GetSettingsTextBrush()
+    {
+        return _settings.Theme == "dark"
+            ? new SolidColorBrush(MediaColor.FromRgb(246, 246, 248))
+            : new SolidColorBrush(MediaColor.FromRgb(55, 58, 66));
+    }
+
+    private static DrawingIcon LoadApplicationIcon()
+    {
+        var processPath = Environment.ProcessPath;
+        if (!string.IsNullOrWhiteSpace(processPath) && File.Exists(processPath))
+        {
+            return DrawingIcon.ExtractAssociatedIcon(processPath) ?? DrawingSystemIcons.Application;
+        }
+
+        return DrawingSystemIcons.Application;
+    }
+
+    private void ShowWeeklyReport()
+    {
+        var all = _statsStore.Load();
+        var today = DateOnly.FromDateTime(DateTime.Now);
+        var diff = ((int)today.DayOfWeek + 6) % 7;
+        var monday = today.AddDays(-diff);
+
+        var redCount = 0;
+        var greenCount = 0;
+        long redDuration = 0;
+
+        for (var i = 0; i < 7; i++)
+        {
+            var key = monday.AddDays(i).ToString("yyyy-MM-dd");
+            if (!all.TryGetValue(key, out var stats))
+            {
+                continue;
+            }
+
+            redCount += stats.RedCount;
+            greenCount += stats.GreenCount;
+            redDuration += stats.RedDurationMs;
+        }
+
+        var duration = TimeSpan.FromMilliseconds(redDuration);
+        WpfMessageBox.Show(
+            $"思考次数：{redCount} 次\n回复次数：{greenCount} 次\n思考总时长：{(int)duration.TotalHours} 小时 {duration.Minutes} 分钟",
+            "本周周报");
+    }
+
+    private async Task CheckForUpdatesAsync()
+    {
+        var menu = _notifyIcon?.ContextMenuStrip;
+        var previousCursor = Cursor;
+        Cursor = System.Windows.Input.Cursors.Wait;
+        try
+        {
+            using var httpClient = new HttpClient();
+            var checker = new UpdateChecker(httpClient);
+            var result = await checker.CheckAsync(GetCurrentVersion(), UpdateManifestUrl, TimeSpan.FromSeconds(5));
+
+            if (!result.IsSuccess)
+            {
+                WpfMessageBox.Show(result.Message, "检查更新");
+                return;
+            }
+
+            if (!result.HasUpdate)
+            {
+                WpfMessageBox.Show($"当前已是最新版本：{result.CurrentVersion}", "检查更新");
+                return;
+            }
+
+            var notes = result.Notes.Count == 0
+                ? "暂无更新说明。"
+                : string.Join("\n", result.Notes.Select(note => "- " + note));
+            var message = $"发现新版本：{result.LatestVersion}\n\n更新内容：\n{notes}\n\n是否打开 GitHub 下载页面？";
+            if (WpfMessageBox.Show(message, "检查更新", MessageBoxButton.YesNo, MessageBoxImage.Information) == MessageBoxResult.Yes)
+            {
+                OpenUrl(result.DownloadUrl);
+            }
+        }
+        finally
+        {
+            Cursor = previousCursor;
+            menu?.Focus();
+        }
+    }
+
+    private static string GetCurrentVersion()
+    {
+        return Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.0.0";
+    }
+
+    private static void OpenUrl(string url)
+    {
+        Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+    }
+
+    private void ApplySavedWindowPosition()
+    {
+        if (_settings.WindowLeft.HasValue && _settings.WindowTop.HasValue)
+        {
+            Left = _settings.WindowLeft.Value;
+            Top = _settings.WindowTop.Value;
+            return;
+        }
+
+        Left = SystemParameters.WorkArea.Right - Width - 24;
+        Top = SystemParameters.WorkArea.Top + 80;
+    }
+
+    private void SaveSettings(AppSettings settings)
+    {
+        _settings = settings;
+        _settingsStore?.Save(_settings);
+    }
+
+    private void UpdateWindowHeight()
+    {
+        var panelOpen = SettingsPanel.Visibility == Visibility.Visible;
+        Width = SessionDrawer.Visibility == Visibility.Visible ? 374 : 100;
+        var baseHeight = _settings.Style == "single"
+            ? (panelOpen ? 192 : 112)
+            : (panelOpen ? 298 : 220);
+        Height = SessionDrawer.Visibility == Visibility.Visible
+            ? Math.Max(baseHeight, 216)
+            : baseHeight;
+    }
+
+    private void Body_MouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        DragMove();
+    }
+
+    private void GearButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_visibleSessions.Count > 1)
+        {
+            SetDrawerOpen(SessionDrawer.Visibility != Visibility.Visible, suppressAutoOpen: true);
+            return;
+        }
+
+        SettingsPanel.Visibility = SettingsPanel.Visibility == Visibility.Visible
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        UpdateWindowHeight();
+    }
+
+    private void MuteCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        SaveSettings(_settings with { Muted = MuteCheckBox.IsChecked == true });
+    }
+
+    private void ThemeCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        var theme = ThemeCheckBox.IsChecked == true ? "dark" : "light";
+        SaveSettings(_settings with { Theme = theme });
+        ApplyTheme(theme);
+        RebuildTrayMenu();
+    }
+
+    protected override void OnLocationChanged(EventArgs e)
+    {
+        base.OnLocationChanged(e);
+        _settingsStore?.Save(_settings with { WindowLeft = Left, WindowTop = Top });
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        _watcher.Dispose();
+        _sessionWatcher.Dispose();
+        if (_notifyIcon is not null)
+        {
+            _notifyIcon.Visible = false;
+            _notifyIcon.Dispose();
+        }
+
+        base.OnClosed(e);
+    }
+
+    private sealed record LampVisualConfig(
+        MediaColor ActiveColor,
+        MediaColor DimColor,
+        MediaColor GlowColor,
+        MediaColor InnerGlowColor);
+}

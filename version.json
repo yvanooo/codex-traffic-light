@@ -1,0 +1,10 @@
+{
+  "version": "1.0.0",
+  "title": "Codex 红绿灯 1.0.0",
+  "notes": [
+    "首次发布 Codex 红绿灯",
+    "支持 CLI 和 VS Code 插件任务状态监控",
+    "支持手动检查更新"
+  ],
+  "downloadUrl": "https://github.com/Novsco12Gao/codex-traffic-light/releases/tag/v1.0.0"
+}

@@ -1,0 +1,10 @@
+{
+  "version": "1.0.1",
+  "title": "Codex 红绿灯 1.0.1",
+  "notes": [
+    "优化多任务识别",
+    "修复浅色模式显示",
+    "改进检查更新体验"
+  ],
+  "downloadUrl": "https://github.com/Novsco12Gao/codex-traffic-light/releases/tag/v1.0.1"
+}

@@ -1,0 +1,43 @@
+using CodexTrafficLight.Core.Services;
+
+namespace CodexTrafficLight.Tests;
+
+public sealed class CodexPathsTests
+{
+    [Fact]
+    public void ExplicitHomeDirectoryUsesLocalCodexDirectory()
+    {
+        var root = CreateTempRoot();
+
+        var paths = new CodexPaths(root);
+
+        Assert.Equal(Path.Combine(root, ".codex"), paths.CodexDirectory);
+        Assert.Equal(Path.Combine(root, ".codex", "hooks.json"), paths.HooksPath);
+    }
+
+    [Fact]
+    public void EnvironmentCodexHomeOverridesDefaultHome()
+    {
+        var codexHome = CreateTempRoot();
+        var previous = Environment.GetEnvironmentVariable("CODEX_HOME");
+
+        try
+        {
+            Environment.SetEnvironmentVariable("CODEX_HOME", codexHome);
+            var paths = new CodexPaths();
+
+            Assert.Equal(codexHome, paths.CodexDirectory);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CODEX_HOME", previous);
+        }
+    }
+
+    private static string CreateTempRoot()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "CodexTrafficLightTests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(path);
+        return path;
+    }
+}
