@@ -46,6 +46,7 @@ public partial class MainWindow : Window
     private CodexLightState _lastAggregateState = CodexLightState.Unknown;
     private DateTimeOffset _drawerSuppressedUntil = DateTimeOffset.MinValue;
     private readonly DispatcherTimer _drawerAutoCloseTimer;
+    private bool _statsInitialized;
     private static string AboutText => $"""
 Codex 红绿灯
 
@@ -121,6 +122,7 @@ xUnit 自动化测试
         };
 
         ApplySavedWindowPosition();
+        Topmost = _settings.Topmost;
         MuteCheckBox.IsChecked = _settings.Muted;
         ThemeCheckBox.IsChecked = _settings.Theme == "dark";
         ApplyTheme(_settings.Theme);
@@ -138,6 +140,7 @@ xUnit 自动化测试
         CreateTrayMenu();
         InstallHooksAtStartup();
         ApplySessions(LoadCurrentSessions());
+        _statsInitialized = true;
     }
 
     public void ApplyStatus(CodexStatus status)
@@ -154,12 +157,26 @@ xUnit 自动化测试
             return;
         }
 
-        if (status.State != _lastStatsState)
+        RecordStatsState(status.State);
+    }
+
+    private void RecordStatsState(CodexLightState state)
+    {
+        if (state == CodexLightState.Unknown || state == _lastStatsState)
         {
-            _statsStore.RecordStateChange(status.State, _lastStatsState, _redStartedAt);
-            _redStartedAt = status.State == CodexLightState.Red ? DateTimeOffset.Now : null;
-            _lastStatsState = status.State;
+            return;
         }
+
+        if (!_statsInitialized)
+        {
+            _redStartedAt = state == CodexLightState.Red ? DateTimeOffset.Now : null;
+            _lastStatsState = state;
+            return;
+        }
+
+        _statsStore.RecordStateChange(state, _lastStatsState, _redStartedAt);
+        _redStartedAt = state == CodexLightState.Red ? DateTimeOffset.Now : null;
+        _lastStatsState = state;
     }
 
     public void ApplySessions(IReadOnlyList<CodexSessionStatus> sessions)
@@ -175,6 +192,7 @@ xUnit 自动化测试
         if (sessions.Count > 0)
         {
             ApplyState(aggregateState);
+            RecordStatsState(aggregateState);
         }
 
         if (!hasMultipleSessions)
@@ -207,7 +225,7 @@ xUnit 自动化测试
         ApplyStyle(_settings.Style);
     }
 
-    private static void ApplyLampVisual(CodexLightState state, Ellipse lamp, Ellipse well, Ellipse ring, bool active)
+    private void ApplyLampVisual(CodexLightState state, Ellipse lamp, Ellipse well, Ellipse ring, bool active)
     {
         var config = GetLampConfig(state);
         var lampBrush = CreateLampBrush(config, active);
@@ -229,18 +247,18 @@ xUnit 自动化测试
         ring.Opacity = 0;
         ResetRingScale(ring);
 
-        if (!active)
+        if (!active || _settings.LampEffect.Equals("steady", StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
 
         if (state == CodexLightState.Red)
         {
-            StartBreath(lamp, lampGlow, wellGlow);
+            StartBreath(lamp, lampGlow, wellGlow, GetLampEffectDuration());
             return;
         }
 
-        StartReferencePulse(lamp, ring);
+        StartReferencePulse(lamp, ring, GetLampEffectDuration());
     }
 
     private static LampVisualConfig GetLampConfig(CodexLightState state)
@@ -331,13 +349,23 @@ xUnit 自动化测试
         };
     }
 
-    private static void StartBreath(Ellipse lamp, DropShadowEffect lampGlow, DropShadowEffect wellGlow)
+    private TimeSpan GetLampEffectDuration()
+    {
+        return _settings.LampSpeed.ToLowerInvariant() switch
+        {
+            "slow" => TimeSpan.FromMilliseconds(1500),
+            "fast" => TimeSpan.FromMilliseconds(650),
+            _ => TimeSpan.FromSeconds(1)
+        };
+    }
+
+    private static void StartBreath(Ellipse lamp, DropShadowEffect lampGlow, DropShadowEffect wellGlow, TimeSpan duration)
     {
         var opacityAnimation = new DoubleAnimation
         {
             From = 1,
             To = 0.35,
-            Duration = TimeSpan.FromSeconds(1),
+            Duration = duration,
             AutoReverse = true,
             RepeatBehavior = RepeatBehavior.Forever,
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut }
@@ -346,7 +374,7 @@ xUnit 自动化测试
         {
             From = 0.9,
             To = 0.38,
-            Duration = TimeSpan.FromSeconds(1),
+            Duration = duration,
             AutoReverse = true,
             RepeatBehavior = RepeatBehavior.Forever,
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut }
@@ -357,13 +385,13 @@ xUnit 自动化测试
         wellGlow.BeginAnimation(DropShadowEffect.OpacityProperty, glowAnimation.Clone());
     }
 
-    private static void StartReferencePulse(Ellipse lamp, Ellipse ring)
+    private static void StartReferencePulse(Ellipse lamp, Ellipse ring, TimeSpan duration)
     {
         var lampAnimation = new DoubleAnimation
         {
             From = 1,
             To = 0.2,
-            Duration = TimeSpan.FromMilliseconds(275),
+            Duration = duration,
             AutoReverse = true,
             RepeatBehavior = RepeatBehavior.Forever,
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut }
@@ -372,7 +400,7 @@ xUnit 自动化测试
         {
             From = 0.42,
             To = 0,
-            Duration = TimeSpan.FromMilliseconds(275),
+            Duration = duration,
             RepeatBehavior = RepeatBehavior.Forever,
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
         };
@@ -380,7 +408,7 @@ xUnit 自动化测试
         {
             From = 1,
             To = 1.72,
-            Duration = TimeSpan.FromMilliseconds(275),
+            Duration = duration,
             RepeatBehavior = RepeatBehavior.Forever,
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
         };
@@ -660,9 +688,15 @@ xUnit 自动化测试
         menu.Items.Add("清理已完成会话", null, (_, _) => ClearEndedSessions());
         menu.Items.Add("本周周报", null, (_, _) => ShowWeeklyReport());
         menu.Items.Add("检查更新", null, async (_, _) => await CheckForUpdatesAsync());
-        menu.Items.Add("关于我", null, (_, _) => WpfMessageBox.Show(AboutText, "关于"));
+        menu.Items.Add("关于我", null, (_, _) => ShowAbout());
+        menu.Items.Add("设置", null, (_, _) => ShowSettingsWindow());
         menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add("退出", null, (_, _) => System.Windows.Application.Current.Shutdown());
+    }
+
+    private static void ShowAbout()
+    {
+        WpfMessageBox.Show(AboutText, "关于");
     }
 
     private void ToggleWindowVisibility()
@@ -676,6 +710,33 @@ xUnit 自动化测试
             Show();
             Activate();
         }
+    }
+
+    private void ShowSettingsWindow()
+    {
+        var window = new SettingsWindow(_settings)
+        {
+            Owner = this
+        };
+
+        if (window.ShowDialog() != true)
+        {
+            return;
+        }
+
+        ApplySettings(window.Settings);
+    }
+
+    private void ApplySettings(AppSettings settings)
+    {
+        SaveSettings(settings);
+        Topmost = _settings.Topmost;
+        MuteCheckBox.IsChecked = _settings.Muted;
+        ThemeCheckBox.IsChecked = _settings.Theme == "dark";
+        ApplyTheme(_settings.Theme);
+        ApplyState(_currentState);
+        ApplySessions(LoadCurrentSessions());
+        RebuildTrayMenu();
     }
 
     private void SetManualState(CodexLightState state, string eventName)
@@ -910,7 +971,7 @@ xUnit 自动化测试
 
     private static string GetCurrentVersion()
     {
-        return Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.0.0";
+        return Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.0.1";
     }
 
     private static void OpenUrl(string url)

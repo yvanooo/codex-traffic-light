@@ -62,7 +62,9 @@ public sealed class AppVisualStyleTests
         Assert.Contains("_refreshTimer", File.ReadAllText(Path.Combine(root, "src", "CodexTrafficLight.App", "SessionStatusDirectoryWatcher.cs")));
         Assert.Equal(6, Regex.Matches(xaml, "Width=\"44\" Height=\"44\"").Count);
         Assert.Equal(3, Regex.Matches(xaml, "Width=\"34\" Height=\"34\"").Count);
-        Assert.Contains("TimeSpan.FromMilliseconds(275)", code);
+        Assert.Contains("GetLampEffectDuration", code);
+        Assert.Contains("TimeSpan.FromMilliseconds(1500)", code);
+        Assert.Contains("TimeSpan.FromMilliseconds(650)", code);
         Assert.Contains("TimeSpan.FromSeconds(1)", code);
     }
 
@@ -88,12 +90,29 @@ public sealed class AppVisualStyleTests
         var project = File.ReadAllText(Path.Combine(root, "src", "CodexTrafficLight.App", "CodexTrafficLight.App.csproj"));
         var code = File.ReadAllText(Path.Combine(root, "src", "CodexTrafficLight.App", "MainWindow.xaml.cs"));
 
-        Assert.Contains("<Version>1.0.0</Version>", project);
+        Assert.Contains("<Version>1.0.1</Version>", project);
         Assert.Contains("<IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>", project);
         Assert.Contains("UpdateManifestUrl", code);
         Assert.Contains("CheckForUpdatesAsync", code);
         Assert.Contains("UpdateChecker", code);
         Assert.DoesNotContain("本地版不使用在线更新检查", code);
+    }
+
+    [Fact]
+    public void TrayMenuShowsSettingsBelowAbout()
+    {
+        var root = FindRepositoryRoot();
+        var code = File.ReadAllText(Path.Combine(root, "src", "CodexTrafficLight.App", "MainWindow.xaml.cs"));
+        var settingsWindowPath = Path.Combine(root, "src", "CodexTrafficLight.App", "SettingsWindow.xaml");
+
+        Assert.True(
+            code.IndexOf("ShowAbout", StringComparison.Ordinal) < code.IndexOf("ShowSettingsWindow", StringComparison.Ordinal),
+            "Expected Settings tray menu item below About.");
+        Assert.True(
+            code.IndexOf("ShowSettingsWindow", StringComparison.Ordinal) < code.IndexOf("Shutdown", StringComparison.Ordinal),
+            "Expected Settings tray menu item above Exit.");
+        Assert.True(File.Exists(settingsWindowPath), "Expected SettingsWindow.xaml to exist.");
+        Assert.Contains("LampEffectComboBox", File.ReadAllText(settingsWindowPath));
     }
 
     private static string FindRepositoryRoot()

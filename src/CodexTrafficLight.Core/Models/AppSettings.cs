@@ -9,4 +9,7 @@ public sealed record AppSettings
     public bool Muted { get; init; }
     public bool AutoOpenDrawerOnYellow { get; init; } = true;
     public bool ShowEndedSessions { get; init; }
+    public bool Topmost { get; init; } = true;
+    public string LampEffect { get; init; } = "breath";
+    public string LampSpeed { get; init; } = "standard";
 }

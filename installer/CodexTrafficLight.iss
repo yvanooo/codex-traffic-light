@@ -1,5 +1,5 @@
 #define AppName "Codex 红绿灯"
-#define AppVersion "1.0.0"
+#define AppVersion "1.0.1"
 #define AppPublisher "Gyk"
 #define AppExeName "CodexTrafficLight.App.exe"
 #define PublishDir "..\dist\CodexTrafficLight-installer-files"

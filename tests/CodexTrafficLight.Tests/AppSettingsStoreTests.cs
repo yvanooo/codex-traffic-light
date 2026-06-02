@@ -17,6 +17,9 @@ public sealed class AppSettingsStoreTests
         Assert.False(settings.Muted);
         Assert.True(settings.AutoOpenDrawerOnYellow);
         Assert.False(settings.ShowEndedSessions);
+        Assert.True(settings.Topmost);
+        Assert.Equal("breath", settings.LampEffect);
+        Assert.Equal("standard", settings.LampSpeed);
         Assert.Null(settings.WindowLeft);
         Assert.Null(settings.WindowTop);
     }
@@ -33,7 +36,10 @@ public sealed class AppSettingsStoreTests
             Style = "single",
             Muted = true,
             AutoOpenDrawerOnYellow = false,
-            ShowEndedSessions = true
+            ShowEndedSessions = true,
+            Topmost = false,
+            LampEffect = "steady",
+            LampSpeed = "slow"
         };
 
         store.Save(expected);
@@ -46,6 +52,9 @@ public sealed class AppSettingsStoreTests
         Assert.True(actual.Muted);
         Assert.False(actual.AutoOpenDrawerOnYellow);
         Assert.True(actual.ShowEndedSessions);
+        Assert.False(actual.Topmost);
+        Assert.Equal("steady", actual.LampEffect);
+        Assert.Equal("slow", actual.LampSpeed);
     }
 
     private static string CreateTempRoot()

@@ -42,6 +42,28 @@ public sealed class StatsStoreTests
         Assert.Equal(0, stats["2026-06-01"].RedDurationMs);
     }
 
+    [Fact]
+    public void RecordsAggregateSessionStateChangesForWeeklyReport()
+    {
+        var store = new StatsStore(new CodexPaths(CreateTempRoot()));
+        var day = new DateOnly(2026, 6, 1);
+        var redStartedAt = DateTimeOffset.Parse("2026-06-01T10:00:00+08:00");
+
+        store.RecordStateChange(CodexLightState.Red, CodexLightState.Unknown, null, day, redStartedAt);
+        store.RecordStateChange(
+            CodexLightState.Green,
+            CodexLightState.Red,
+            redStartedAt,
+            day,
+            DateTimeOffset.Parse("2026-06-01T10:03:00+08:00"));
+
+        var stats = store.Load();
+
+        Assert.Equal(1, stats["2026-06-01"].RedCount);
+        Assert.Equal(1, stats["2026-06-01"].GreenCount);
+        Assert.Equal(180000, stats["2026-06-01"].RedDurationMs);
+    }
+
     private static string CreateTempRoot()
     {
         var path = Path.Combine(Path.GetTempPath(), "CodexTrafficLightTests", Guid.NewGuid().ToString("N"));
