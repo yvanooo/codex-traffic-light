@@ -17,6 +17,7 @@ public sealed class InstallerScriptTests
         Assert.Contains("#define PublishDir \"..\\dist\\CodexTrafficLight-installer-files\"", script);
         Assert.Contains("DefaultDirName={autopf}\\CodexTrafficLight", script);
         Assert.Contains("AppendDefaultDirName=yes", script);
+        Assert.Contains(@"Name: ""chinesesimp""; MessagesFile: ""compiler:Languages\ChineseSimplified.isl""", script);
         Assert.Contains("OutputDir=..\\dist\\installer", script);
         Assert.Contains("OutputBaseFilename=CodexTrafficLightSetup-{#AppVersion}", script);
         Assert.Contains(@"Source: ""{#PublishDir}\*""; DestDir: ""{app}""; Excludes: ""*.pdb""; Flags: ignoreversion recursesubdirs createallsubdirs", script);
