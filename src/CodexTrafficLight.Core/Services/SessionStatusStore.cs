@@ -9,6 +9,8 @@ public sealed class SessionStatusStore
     private static readonly TimeSpan GreenRetention = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan YellowRetention = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan RedRetention = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan LiveCliWorkRetention = TimeSpan.FromHours(6);
+    private static readonly TimeSpan LiveVsCodePluginWorkRetention = TimeSpan.FromHours(2);
     private readonly CodexPaths _paths;
     private readonly Func<int, bool> _isProcessRunning;
 
@@ -133,17 +135,30 @@ public sealed class SessionStatusStore
 
         return session.State switch
         {
-            CodexLightState.Yellow => age <= YellowRetention || IsLiveCliWork(session),
-            CodexLightState.Red => age <= RedRetention || IsLiveCliWork(session),
+            CodexLightState.Yellow => age <= YellowRetention || IsLiveWork(session, age),
+            CodexLightState.Red => age <= RedRetention || IsLiveWork(session, age),
             _ => age <= RedRetention
         };
     }
 
-    private bool IsLiveCliWork(CodexSessionStatus session)
+    private bool IsLiveWork(CodexSessionStatus session, TimeSpan age)
     {
-        return session.Source.Equals("cli", StringComparison.OrdinalIgnoreCase) &&
-               session.ProcessId > 0 &&
-               _isProcessRunning(session.ProcessId);
+        if (session.ProcessId <= 0 || !_isProcessRunning(session.ProcessId))
+        {
+            return false;
+        }
+
+        if (session.Source.Equals("cli", StringComparison.OrdinalIgnoreCase))
+        {
+            return age <= LiveCliWorkRetention;
+        }
+
+        if (session.Source.Equals("vscode-plugin", StringComparison.OrdinalIgnoreCase))
+        {
+            return age <= LiveVsCodePluginWorkRetention;
+        }
+
+        return false;
     }
 
     private static bool IsProcessRunning(int processId)

@@ -133,6 +133,36 @@ public sealed class SessionStatusStoreTests
     }
 
     [Fact]
+    public void LoadVisibleSessionsKeepsLongRunningVsCodePluginRedSessionWhenProcessIsStillRunning()
+    {
+        var paths = new CodexPaths(CreateTempRoot());
+        var store = new SessionStatusStore(paths, processId => processId == 123);
+        var now = DateTimeOffset.Parse("2026-06-01T15:10:00+08:00");
+
+        store.Write(CreateSession("vscode-long-red", CodexLightState.Red, @"F:\Mes", now.AddMinutes(-17), source: "vscode-plugin"));
+
+        var sessions = store.LoadVisibleSessions(now);
+
+        Assert.Single(sessions);
+        Assert.Equal("vscode-long-red", sessions[0].SessionId);
+        Assert.Equal(CodexLightState.Red, SessionStatusStore.GetAggregateState(sessions));
+    }
+
+    [Fact]
+    public void LoadVisibleSessionsHidesVeryOldVsCodePluginRedSessionEvenWhenAppServerIsRunning()
+    {
+        var paths = new CodexPaths(CreateTempRoot());
+        var store = new SessionStatusStore(paths, processId => processId == 123);
+        var now = DateTimeOffset.Parse("2026-06-01T15:10:00+08:00");
+
+        store.Write(CreateSession("vscode-very-old-red", CodexLightState.Red, @"F:\Mes", now.AddHours(-3), source: "vscode-plugin"));
+
+        var sessions = store.LoadVisibleSessions(now);
+
+        Assert.Empty(sessions);
+    }
+
+    [Fact]
     public void WriteOverwritesSameSessionIdInsteadOfCreatingDuplicateRows()
     {
         var paths = new CodexPaths(CreateTempRoot());
