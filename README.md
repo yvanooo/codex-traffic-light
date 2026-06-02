@@ -11,7 +11,7 @@
 - 支持托盘右键菜单、手动切灯、单灯/三灯切换、深浅色切换、本周周报。
 - 自动写入 Codex hooks，但不会覆盖用户已有 hooks。
 - 多个 Codex CLI 或 VS Code 插件聊天同时运行时，会按会话显示任务状态抽屉。
-- 不需要服务器，不需要联网。
+- 不需要服务器；只有手动点击 `检查更新` 时会访问 GitHub 上的 `version.json`。
 
 ## 本地运行
 
@@ -19,27 +19,23 @@
 dotnet run --project src/CodexTrafficLight.App
 ```
 
-## 打包 EXE
+## 打包安装器
 
 ```powershell
-dotnet publish src/CodexTrafficLight.App/CodexTrafficLight.App.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true
+powershell -ExecutionPolicy Bypass -File tools\publish-installer.ps1
 ```
 
 输出目录：
 
 ```text
-src\CodexTrafficLight.App\bin\Release\net8.0-windows\win-x64\publish\
+dist\installer\CodexTrafficLightSetup-1.0.0.exe
 ```
+
+安装器会让用户选择安装位置，并把程序文件安装到独立的 `CodexTrafficLight` 文件夹中，同时创建开始菜单快捷方式，可选创建桌面快捷方式。
 
 ## 检查更新
 
 托盘菜单的 `检查更新` 会请求远程 `version.json`，只提示新版并询问是否打开 GitHub 下载页，不会自动下载或替换 EXE。
-
-远程 JSON 示例见：
-
-```text
-docs\update-version.example.json
-```
 
 当前默认读取 `https://raw.githubusercontent.com/Novsco12Gao/codex-traffic-light/main/version.json`。发布新版时，更新根目录 `version.json` 的版本号、更新说明和 GitHub Release 地址即可。
 
