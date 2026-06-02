@@ -218,6 +218,23 @@ public sealed class SessionStatusStoreTests
         Assert.Equal(CodexLightState.Unknown, SessionStatusStore.GetAggregateState(Array.Empty<CodexSessionStatus>()));
     }
 
+    [Fact]
+    public void GetCompletionProgressTextCountsCliAndVsCodePluginSessionsTogether()
+    {
+        var now = DateTimeOffset.Parse("2026-06-01T15:10:00+08:00");
+        var sessions = new[]
+        {
+            CreateSession("cli-running", CodexLightState.Red, @"F:\Mes", now, source: "cli"),
+            CreateSession("cli-done", CodexLightState.Green, @"F:\Codex", now, source: "cli"),
+            CreateSession("vscode-running", CodexLightState.Red, @"F:\Docs", now, source: "vscode-plugin"),
+            CreateSession("vscode-done", CodexLightState.Green, @"F:\Plan", now, source: "vscode-plugin")
+        };
+
+        var text = SessionStatusStore.GetCompletionProgressText(sessions);
+
+        Assert.Equal("2/4", text);
+    }
+
     private static CodexSessionStatus CreateSession(
         string id,
         CodexLightState state,

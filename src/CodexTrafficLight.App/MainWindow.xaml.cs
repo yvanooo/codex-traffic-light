@@ -169,7 +169,7 @@ xUnit 自动化测试
         var hasMultipleSessions = sessions.Count > 1;
 
         SessionCountBadge.Visibility = hasMultipleSessions ? Visibility.Visible : Visibility.Collapsed;
-        SessionCountText.Text = sessions.Count.ToString();
+        SessionCountText.Text = SessionStatusStore.GetCompletionProgressText(sessions);
         RenderSessionRows(sessions);
 
         if (sessions.Count > 0)

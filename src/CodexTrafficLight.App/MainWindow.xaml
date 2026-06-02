@@ -92,8 +92,8 @@
                             </Button.Template>
                         </Button>
                         <Border x:Name="SessionCountBadge"
-                                MinWidth="15"
-                                Height="15"
+                                MinWidth="27"
+                                Height="16"
                                 CornerRadius="8"
                                 Background="#FF9F0A"
                                 HorizontalAlignment="Right"

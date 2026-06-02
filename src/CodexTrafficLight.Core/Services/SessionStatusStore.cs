@@ -114,6 +114,13 @@ public sealed class SessionStatusStore
             : CodexLightState.Unknown;
     }
 
+    public static string GetCompletionProgressText(IEnumerable<CodexSessionStatus> sessions)
+    {
+        var list = sessions.ToList();
+        var completed = list.Count(session => session.State == CodexLightState.Green);
+        return $"{completed}/{list.Count}";
+    }
+
     private string GetSessionPath(string sessionId)
     {
         var fileName = SanitizeSessionId(sessionId) + ".json";
