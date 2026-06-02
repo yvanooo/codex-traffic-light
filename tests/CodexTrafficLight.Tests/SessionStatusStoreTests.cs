@@ -97,7 +97,7 @@ public sealed class SessionStatusStoreTests
     public void LoadVisibleSessionsHidesYellowAfterFiveMinutesAndRedAfterTenMinutes()
     {
         var paths = new CodexPaths(CreateTempRoot());
-        var store = new SessionStatusStore(paths);
+        var store = new SessionStatusStore(paths, _ => false);
         var now = DateTimeOffset.Parse("2026-06-01T15:10:00+08:00");
 
         store.Write(CreateSession("stale-yellow", CodexLightState.Yellow, @"F:\YellowOld", now.AddMinutes(-6)));
@@ -112,6 +112,24 @@ public sealed class SessionStatusStoreTests
         Assert.Contains(sessions, session => session.SessionId == "fresh-red");
         Assert.DoesNotContain(sessions, session => session.SessionId == "stale-yellow");
         Assert.DoesNotContain(sessions, session => session.SessionId == "stale-red");
+    }
+
+    [Fact]
+    public void LoadVisibleSessionsKeepsStaleRedAndYellowSessionsWhenProcessIsStillRunning()
+    {
+        var paths = new CodexPaths(CreateTempRoot());
+        var store = new SessionStatusStore(paths, processId => processId == 123);
+        var now = DateTimeOffset.Parse("2026-06-01T15:10:00+08:00");
+
+        store.Write(CreateSession("long-red", CodexLightState.Red, @"F:\LongRed", now.AddMinutes(-30)));
+        store.Write(CreateSession("long-yellow", CodexLightState.Yellow, @"F:\LongYellow", now.AddMinutes(-30)));
+
+        var sessions = store.LoadVisibleSessions(now);
+
+        Assert.Equal(2, sessions.Count);
+        Assert.Contains(sessions, session => session.SessionId == "long-red");
+        Assert.Contains(sessions, session => session.SessionId == "long-yellow");
+        Assert.Equal(CodexLightState.Yellow, SessionStatusStore.GetAggregateState(sessions));
     }
 
     [Fact]

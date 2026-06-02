@@ -10,10 +10,12 @@ public sealed class SessionStatusStore
     private static readonly TimeSpan YellowRetention = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan RedRetention = TimeSpan.FromMinutes(10);
     private readonly CodexPaths _paths;
+    private readonly Func<int, bool> _isProcessRunning;
 
     public SessionStatusStore(CodexPaths paths, Func<int, bool>? isProcessRunning = null)
     {
         _paths = paths;
+        _isProcessRunning = isProcessRunning ?? IsProcessRunning;
     }
 
     public void Write(CodexSessionStatus status)
@@ -131,10 +133,30 @@ public sealed class SessionStatusStore
 
         return session.State switch
         {
-            CodexLightState.Yellow => age <= YellowRetention,
-            CodexLightState.Red => age <= RedRetention,
+            CodexLightState.Yellow => age <= YellowRetention || IsLiveCliWork(session),
+            CodexLightState.Red => age <= RedRetention || IsLiveCliWork(session),
             _ => age <= RedRetention
         };
+    }
+
+    private bool IsLiveCliWork(CodexSessionStatus session)
+    {
+        return session.Source.Equals("cli", StringComparison.OrdinalIgnoreCase) &&
+               session.ProcessId > 0 &&
+               _isProcessRunning(session.ProcessId);
+    }
+
+    private static bool IsProcessRunning(int processId)
+    {
+        try
+        {
+            using var process = System.Diagnostics.Process.GetProcessById(processId);
+            return !process.HasExited;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static int GetPriority(CodexSessionStatus session)
