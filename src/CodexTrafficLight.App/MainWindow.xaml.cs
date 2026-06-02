@@ -968,6 +968,15 @@ xUnit 自动化测试
         UpdateWindowHeight();
     }
 
+    private void SessionCountBadge_MouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        if (_visibleSessions.Count > 1)
+        {
+            SetDrawerOpen(SessionDrawer.Visibility != Visibility.Visible, suppressAutoOpen: true);
+        }
+    }
+
     private void MuteCheckBox_Changed(object sender, RoutedEventArgs e)
     {
         SaveSettings(_settings with { Muted = MuteCheckBox.IsChecked == true });

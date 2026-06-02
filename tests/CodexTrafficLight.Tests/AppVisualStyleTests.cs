@@ -32,6 +32,13 @@ public sealed class AppVisualStyleTests
         Assert.Contains("Width=\"80\"", xaml);
         Assert.Contains("Height=\"200\"", xaml);
         Assert.Contains("SessionCountBadge", xaml);
+        Assert.Contains("MouseLeftButtonDown=\"SessionCountBadge_MouseLeftButtonDown\"", xaml);
+        Assert.Contains("MinWidth=\"24\"", xaml);
+        Assert.Contains("Height=\"14\"", xaml);
+        Assert.Contains("Grid.RowSpan=\"2\"", xaml);
+        Assert.Contains("Margin=\"0,0,4,26\"", xaml);
+        Assert.Contains("Panel.ZIndex=\"10\"", xaml);
+        Assert.Contains("SessionCountBadge_MouseLeftButtonDown", code);
         Assert.Contains("SessionDrawer", xaml);
         Assert.Contains("SessionDrawerTitle", xaml);
         Assert.Contains("Codex 任务", xaml);

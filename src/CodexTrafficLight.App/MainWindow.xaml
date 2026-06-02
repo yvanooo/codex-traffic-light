@@ -91,24 +91,28 @@
                                 </ControlTemplate>
                             </Button.Template>
                         </Button>
-                        <Border x:Name="SessionCountBadge"
-                                MinWidth="27"
-                                Height="16"
-                                CornerRadius="8"
-                                Background="#FF9F0A"
-                                HorizontalAlignment="Right"
-                                VerticalAlignment="Top"
-                                Visibility="Collapsed">
-                            <TextBlock x:Name="SessionCountText"
-                                       Text="0"
-                                       FontSize="10"
-                                       FontWeight="Bold"
-                                       Foreground="#171717"
-                                       HorizontalAlignment="Center"
-                                       VerticalAlignment="Center"
-                                       Margin="4,0"/>
-                        </Border>
                     </Grid>
+                    <Border x:Name="SessionCountBadge"
+                            Grid.RowSpan="2"
+                            MinWidth="24"
+                            Height="14"
+                            CornerRadius="8"
+                            Background="#FF9F0A"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Bottom"
+                            Margin="0,0,4,26"
+                            Panel.ZIndex="10"
+                            MouseLeftButtonDown="SessionCountBadge_MouseLeftButtonDown"
+                            Visibility="Collapsed">
+                        <TextBlock x:Name="SessionCountText"
+                                   Text="0"
+                                   FontSize="9"
+                                   FontWeight="Bold"
+                                   Foreground="#171717"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   Margin="4,0"/>
+                    </Border>
                 </Grid>
             </Border>
 
