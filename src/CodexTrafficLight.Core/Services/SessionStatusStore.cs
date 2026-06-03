@@ -14,15 +14,26 @@ public sealed class SessionStatusStore
     private readonly CodexPaths _paths;
     private readonly Func<int, bool> _isProcessRunning;
     private readonly Func<DateTimeOffset, IReadOnlyList<CodexSessionStatus>> _loadSupplementalSessions;
+    private readonly Func<string, string?> _getSessionTitle;
 
     public SessionStatusStore(
         CodexPaths paths,
         Func<int, bool>? isProcessRunning = null,
-        Func<DateTimeOffset, IReadOnlyList<CodexSessionStatus>>? loadSupplementalSessions = null)
+        Func<DateTimeOffset, IReadOnlyList<CodexSessionStatus>>? loadSupplementalSessions = null,
+        Func<string, string?>? getSessionTitle = null)
     {
         _paths = paths;
         _isProcessRunning = isProcessRunning ?? IsProcessRunning;
         _loadSupplementalSessions = loadSupplementalSessions ?? (current => new CodexRolloutActivityStore(paths).LoadActiveSessions(current));
+        if (getSessionTitle is not null)
+        {
+            _getSessionTitle = getSessionTitle;
+        }
+        else
+        {
+            var titleStore = new CodexThreadTitleStore(paths);
+            _getSessionTitle = titleStore.GetTitle;
+        }
     }
 
     public void Write(CodexSessionStatus status)
@@ -47,6 +58,7 @@ public sealed class SessionStatusStore
             .Where(session => IsVisible(session, current, includeEnded))
             .GroupBy(GetSessionGroupKey, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.OrderByDescending(session => session.UpdatedAt).First())
+            .Select(ResolveDisplayName)
             .OrderBy(GetPriority)
             .ThenByDescending(session => session.UpdatedAt)
             .ToList();
@@ -149,7 +161,7 @@ public sealed class SessionStatusStore
 
         return session.State switch
         {
-            CodexLightState.Yellow => age <= YellowRetention || IsLiveWork(session, age),
+            CodexLightState.Yellow => age <= YellowRetention,
             CodexLightState.Red => age <= RedRetention || IsLiveWork(session, age),
             _ => age <= RedRetention
         };
@@ -178,6 +190,41 @@ public sealed class SessionStatusStore
         }
 
         return false;
+    }
+
+    private CodexSessionStatus ResolveDisplayName(CodexSessionStatus session)
+    {
+        if (!UsesCodexThreadTitle(session))
+        {
+            return session;
+        }
+
+        var title = _getSessionTitle(session.SessionId);
+        var displayName = !string.IsNullOrWhiteSpace(title)
+            ? title
+            : GetWorkspaceDisplayName(session.WorkingDirectory);
+
+        return string.IsNullOrWhiteSpace(displayName) || displayName == session.DisplayName
+            ? session
+            : session with { DisplayName = displayName };
+    }
+
+    private static bool UsesCodexThreadTitle(CodexSessionStatus session)
+    {
+        return session.Source.Equals("vscode-plugin", StringComparison.OrdinalIgnoreCase) ||
+               session.Source.Equals("vscode-project", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string GetWorkspaceDisplayName(string workingDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(workingDirectory))
+        {
+            return "Codex";
+        }
+
+        var trimmed = workingDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var leaf = Path.GetFileName(trimmed);
+        return string.IsNullOrWhiteSpace(leaf) ? "Codex" : leaf;
     }
 
     private static bool IsProcessRunning(int processId)

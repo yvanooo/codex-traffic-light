@@ -62,7 +62,6 @@ public sealed class CodexRolloutActivityStore
         DateTimeOffset? latestActiveAt = null;
         var completedTurns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var abortedTurns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var displayName = string.Empty;
         var workingDirectory = metadata.WorkingDirectory;
 
         foreach (var line in tail.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
@@ -92,9 +91,6 @@ public sealed class CodexRolloutActivityStore
             var eventType = ReadString(payload, "type");
             switch (eventType)
             {
-                case "user_message":
-                    displayName = NormalizeDisplayName(ReadString(payload, "message"));
-                    break;
                 case "task_started":
                     latestActiveTurnId = ReadString(payload, "turn_id");
                     latestActiveAt = timestamp;
@@ -118,7 +114,7 @@ public sealed class CodexRolloutActivityStore
         return new CodexSessionStatus
         {
             SessionId = "codex-" + metadata.SessionId,
-            DisplayName = string.IsNullOrWhiteSpace(displayName) ? "Codex project task" : displayName,
+            DisplayName = GetWorkspaceDisplayName(workingDirectory),
             WorkingDirectory = workingDirectory,
             Source = "vscode-project",
             State = CodexLightState.Red,
@@ -192,15 +188,16 @@ public sealed class CodexRolloutActivityStore
         return DateTimeOffset.TryParse(raw, out var timestamp) ? timestamp : null;
     }
 
-    private static string NormalizeDisplayName(string? value)
+    private static string GetWorkspaceDisplayName(string workingDirectory)
     {
-        if (string.IsNullOrWhiteSpace(value))
+        if (string.IsNullOrWhiteSpace(workingDirectory))
         {
-            return string.Empty;
+            return "Codex project task";
         }
 
-        var normalized = string.Join(" ", value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
-        return normalized.Length > 36 ? normalized[..36] : normalized;
+        var trimmed = workingDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var leaf = Path.GetFileName(trimmed);
+        return string.IsNullOrWhiteSpace(leaf) ? "Codex project task" : leaf;
     }
 
     private static string? ReadString(JsonElement element, string propertyName)

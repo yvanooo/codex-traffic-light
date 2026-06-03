@@ -115,7 +115,7 @@ public sealed class SessionStatusStoreTests
     }
 
     [Fact]
-    public void LoadVisibleSessionsKeepsStaleRedAndYellowSessionsWhenProcessIsStillRunning()
+    public void LoadVisibleSessionsKeepsStaleRedButHidesStaleYellowWhenProcessIsStillRunning()
     {
         var paths = new CodexPaths(CreateTempRoot());
         var store = new SessionStatusStore(paths, processId => processId == 123);
@@ -126,10 +126,11 @@ public sealed class SessionStatusStoreTests
 
         var sessions = store.LoadVisibleSessions(now);
 
-        Assert.Equal(2, sessions.Count);
+        var session = Assert.Single(sessions);
+        Assert.Equal("long-red", session.SessionId);
         Assert.Contains(sessions, session => session.SessionId == "long-red");
-        Assert.Contains(sessions, session => session.SessionId == "long-yellow");
-        Assert.Equal(CodexLightState.Yellow, SessionStatusStore.GetAggregateState(sessions));
+        Assert.DoesNotContain(sessions, session => session.SessionId == "long-yellow");
+        Assert.Equal(CodexLightState.Red, SessionStatusStore.GetAggregateState(sessions));
     }
 
     [Fact]
@@ -146,6 +147,27 @@ public sealed class SessionStatusStoreTests
         Assert.Single(sessions);
         Assert.Equal("vscode-long-red", sessions[0].SessionId);
         Assert.Equal(CodexLightState.Red, SessionStatusStore.GetAggregateState(sessions));
+    }
+
+    [Fact]
+    public void LoadVisibleSessionsFallsBackToWorkspaceNameForVsCodeRowsWithoutThreadTitle()
+    {
+        var paths = new CodexPaths(CreateTempRoot());
+        var store = new SessionStatusStore(paths, _ => true, getSessionTitle: _ => null);
+        var now = DateTimeOffset.Parse("2026-06-01T15:10:00+08:00");
+
+        store.Write(CreateSession(
+            "codex-missing-title",
+            CodexLightState.Yellow,
+            @"C:\Users\52867\Documents\datadaping",
+            now.AddMinutes(-1),
+            source: "vscode-plugin",
+            displayName: "# Overview Generate 0 to 3 hyperpers"));
+
+        var sessions = store.LoadVisibleSessions(now);
+
+        var session = Assert.Single(sessions);
+        Assert.Equal("datadaping", session.DisplayName);
     }
 
     [Fact]
@@ -240,12 +262,13 @@ public sealed class SessionStatusStoreTests
         CodexLightState state,
         string workingDirectory,
         DateTimeOffset updatedAt,
-        string source = "cli")
+        string source = "cli",
+        string? displayName = null)
     {
         return new CodexSessionStatus
         {
             SessionId = id,
-            DisplayName = Path.GetFileName(workingDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
+            DisplayName = displayName ?? Path.GetFileName(workingDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
             WorkingDirectory = workingDirectory,
             State = state,
             Event = state switch

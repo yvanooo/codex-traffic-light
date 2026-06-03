@@ -20,6 +20,7 @@ public sealed class CodexPaths
         StatusPath = Path.Combine(CodexDirectory, "codex_traffic_light_state.json");
         SettingsPath = Path.Combine(CodexDirectory, "codex_traffic_light_settings.json");
         StatsPath = Path.Combine(CodexDirectory, "codex_traffic_light_stats.json");
+        StateDatabasePath = Path.Combine(CodexDirectory, "state_5.sqlite");
         HookScriptDirectory = Path.Combine(CodexDirectory, "codex-traffic-light");
         HookScriptPath = Path.Combine(HookScriptDirectory, "codex_traffic_light_write_status.ps1");
         SessionDirectory = Path.Combine(HookScriptDirectory, "sessions");
@@ -33,6 +34,7 @@ public sealed class CodexPaths
     public string StatusPath { get; }
     public string SettingsPath { get; }
     public string StatsPath { get; }
+    public string StateDatabasePath { get; }
     public string HookScriptDirectory { get; }
     public string HookScriptPath { get; }
     public string SessionDirectory { get; }

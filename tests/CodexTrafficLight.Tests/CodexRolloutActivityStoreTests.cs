@@ -22,7 +22,7 @@ public sealed class CodexRolloutActivityStoreTests
 
         var session = Assert.Single(sessions);
         Assert.Equal("codex-thread-1", session.SessionId);
-        Assert.Equal("项目任务测试", session.DisplayName);
+        Assert.Equal("datespace", session.DisplayName);
         Assert.Equal(@"D:\workspace\datespace", session.WorkingDirectory);
         Assert.Equal("vscode-project", session.Source);
         Assert.Equal(CodexLightState.Red, session.State);
@@ -123,6 +123,27 @@ public sealed class CodexRolloutActivityStoreTests
         var session = Assert.Single(sessions);
         Assert.Equal("codex-thread-1", session.SessionId);
         Assert.Equal(CodexLightState.Red, session.State);
+    }
+
+    [Fact]
+    public void SessionStatusStoreUsesThreadTitleForProjectRows()
+    {
+        var paths = new CodexPaths(CreateTempRoot());
+        WriteRollout(paths, "thread-1", """
+        {"timestamp":"2026-06-03T09:32:00Z","type":"session_meta","payload":{"id":"thread-1","cwd":"D:\\workspace\\datespace","source":"vscode"}}
+        {"timestamp":"2026-06-03T09:32:01Z","type":"event_msg","payload":{"type":"user_message","message":"当前这一轮很长的用户输入内容\n"}}
+        {"timestamp":"2026-06-03T09:32:02Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1","started_at":1780479122}}
+        """);
+
+        var store = new SessionStatusStore(
+            paths,
+            _ => false,
+            getSessionTitle: sessionId => sessionId == "codex-thread-1" ? "出海页面适配" : null);
+
+        var sessions = store.LoadVisibleSessions(DateTimeOffset.Parse("2026-06-03T09:33:00Z"));
+
+        var session = Assert.Single(sessions);
+        Assert.Equal("出海页面适配", session.DisplayName);
     }
 
     private static string WriteRollout(CodexPaths paths, string threadId, string content)
