@@ -13,11 +13,16 @@ public sealed class SessionStatusStore
     private static readonly TimeSpan LiveVsCodePluginWorkRetention = TimeSpan.FromHours(2);
     private readonly CodexPaths _paths;
     private readonly Func<int, bool> _isProcessRunning;
+    private readonly Func<DateTimeOffset, IReadOnlyList<CodexSessionStatus>> _loadSupplementalSessions;
 
-    public SessionStatusStore(CodexPaths paths, Func<int, bool>? isProcessRunning = null)
+    public SessionStatusStore(
+        CodexPaths paths,
+        Func<int, bool>? isProcessRunning = null,
+        Func<DateTimeOffset, IReadOnlyList<CodexSessionStatus>>? loadSupplementalSessions = null)
     {
         _paths = paths;
         _isProcessRunning = isProcessRunning ?? IsProcessRunning;
+        _loadSupplementalSessions = loadSupplementalSessions ?? (current => new CodexRolloutActivityStore(paths).LoadActiveSessions(current));
     }
 
     public void Write(CodexSessionStatus status)
@@ -36,8 +41,10 @@ public sealed class SessionStatusStore
 
     public IReadOnlyList<CodexSessionStatus> LoadSessions(bool includeEnded, DateTimeOffset? now = null)
     {
+        var current = now ?? DateTimeOffset.Now;
         return LoadAllSessions()
-            .Where(session => IsVisible(session, now ?? DateTimeOffset.Now, includeEnded))
+            .Concat(_loadSupplementalSessions(current))
+            .Where(session => IsVisible(session, current, includeEnded))
             .GroupBy(GetSessionGroupKey, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.OrderByDescending(session => session.UpdatedAt).First())
             .OrderBy(GetPriority)
@@ -150,6 +157,11 @@ public sealed class SessionStatusStore
 
     private bool IsLiveWork(CodexSessionStatus session, TimeSpan age)
     {
+        if (session.Source.Equals("vscode-project", StringComparison.OrdinalIgnoreCase))
+        {
+            return age <= LiveVsCodePluginWorkRetention;
+        }
+
         if (session.ProcessId <= 0 || !_isProcessRunning(session.ProcessId))
         {
             return false;

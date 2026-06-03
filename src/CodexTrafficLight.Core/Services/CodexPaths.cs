@@ -24,6 +24,7 @@ public sealed class CodexPaths
         HookScriptPath = Path.Combine(HookScriptDirectory, "codex_traffic_light_write_status.ps1");
         SessionDirectory = Path.Combine(HookScriptDirectory, "sessions");
         HookDiagnosticsDirectory = Path.Combine(HookScriptDirectory, "diagnostics");
+        RolloutDirectory = Path.Combine(CodexDirectory, "sessions");
     }
 
     public string HomeDirectory { get; }
@@ -36,6 +37,7 @@ public sealed class CodexPaths
     public string HookScriptPath { get; }
     public string SessionDirectory { get; }
     public string HookDiagnosticsDirectory { get; }
+    public string RolloutDirectory { get; }
 
     public void EnsureCodexDirectory()
     {
